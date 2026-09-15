@@ -1,4 +1,53 @@
 
+// ==================== 展示常量与工具函数 ====================
+
+// 设备状态映射
+const ASSET_STATUS_MAP = {
+    available: { label: '闲置', badge: 'bg-blue-100 text-blue-700' },
+    in_use: { label: '使用中', badge: 'bg-indigo-100 text-indigo-700' },
+    in_repair: { label: '维修中', badge: 'bg-red-100 text-red-700' },
+    retired: { label: '已报废', badge: 'bg-gray-200 text-gray-600' }
+};
+
+// 保修状态映射
+const WARRANTY_STATUS_MAP = {
+    active: { label: '在保', badge: 'bg-green-100 text-green-700' },
+    expired: { label: '已过保', badge: 'bg-gray-200 text-gray-600' },
+    unknown: { label: '保修未知', badge: 'bg-gray-100 text-gray-500' }
+};
+
+// 维修单状态映射
+const ORDER_STATUS_MAP = {
+    open: { label: '待处理', badge: 'bg-amber-100 text-amber-700' },
+    in_progress: { label: '维修中', badge: 'bg-red-100 text-red-700' },
+    closed: { label: '已关闭', badge: 'bg-gray-100 text-gray-500' }
+};
+
+// 问题严重程度映射
+const SEVERITY_MAP = {
+    low: { label: '低', badge: 'bg-gray-100 text-gray-600' },
+    medium: { label: '中', badge: 'bg-amber-100 text-amber-700' },
+    high: { label: '高', badge: 'bg-orange-100 text-orange-700' },
+    critical: { label: '严重', badge: 'bg-red-100 text-red-700' }
+};
+
+// HTML 转义（维修备注等来自数据库的内容必须转义后再渲染）
+function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+// 时间显示：截掉秒，"2026-09-10 09:30:00" -> "2026-09-10 09:30"
+function formatDateTime(str) {
+    if (!str) return '-';
+    return String(str).slice(0, 16);
+}
+
 // ==================== UI 管理器 (模态框系统) ====================
 class UIManager {
     constructor() {
@@ -638,6 +687,7 @@ class QueryManager {
         this.errorBox = document.getElementById('errorBox');
         this.loadingEl = document.getElementById('loading');
         this.curlCommand = document.getElementById('curlCommand');
+        this.lastResult = null; // 最近一次查询结果（用于导出）
 
         this.init();
     }
@@ -737,6 +787,7 @@ class QueryManager {
 
     showResult(data) {
         if (!this.resultBox) return;
+        this.lastResult = data;
 
         const resultContent = document.getElementById('resultContent');
         if (resultContent) {
@@ -749,18 +800,324 @@ class QueryManager {
                     <div class="space-y-4">
                         <div>
                             <div class="text-xs text-gray-500 uppercase font-semibold mb-1">固定资产编码</div>
-                            <div class="text-2xl font-bold text-gray-800 font-mono">${data.facode}</div>
+                            <div class="text-2xl font-bold text-gray-800 font-mono">${escapeHtml(data.facode)}</div>
                         </div>
                         <div class="h-px bg-emerald-200"></div>
                         <div>
                             <div class="text-xs text-gray-500 uppercase font-semibold mb-1">序列号 (SN)</div>
-                            <div class="text-3xl font-extrabold text-emerald-600 font-mono tracking-wide selection:bg-emerald-200">${data.sn}</div>
+                            <div class="text-3xl font-extrabold text-emerald-600 font-mono tracking-wide selection:bg-emerald-200">${escapeHtml(data.sn)}</div>
                         </div>
                     </div>
                 </div>
+                ${this.renderAssetSection(data.asset)}
+                ${this.renderRepairSection(data)}
+                ${this.renderExportSection(data)}
             `;
         }
         this.resultBox.classList.remove('hidden');
+    }
+
+    // ---------- 资产基础信息区块（保修状态 + 领用状态） ----------
+    renderAssetSection(asset) {
+        if (!asset) return '';
+
+        const warranty = WARRANTY_STATUS_MAP[asset.warranty_status] || WARRANTY_STATUS_MAP.unknown;
+        const statusConf = ASSET_STATUS_MAP[asset.status] || { label: asset.status || '未知', badge: 'bg-gray-100 text-gray-500' };
+        const checkout = this.getCheckoutInfo(asset);
+
+        const checkoutBanner = checkout.ok
+            ? `<div class="flex items-center gap-2 bg-green-50 border border-green-200 text-green-700 rounded-lg px-4 py-3">
+                   <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                   <span class="text-sm font-bold">可正常领用</span>
+               </div>`
+            : `<div class="flex items-center gap-2 bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3">
+                   <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 18.364"></path></svg>
+                   <span class="text-sm font-bold">不可领用</span>
+                   <span class="text-xs text-red-500">（${escapeHtml(checkout.reason)}）</span>
+               </div>`;
+
+        return `
+            <div class="bg-white rounded-xl p-6 border border-gray-200 shadow-sm mt-4">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-sm font-bold text-gray-700 uppercase tracking-widest">资产基础信息</h3>
+                    <div class="flex gap-2">
+                        <span class="px-2.5 py-1 rounded-full text-xs font-bold ${warranty.badge}">${warranty.label}</span>
+                        <span class="px-2.5 py-1 rounded-full text-xs font-bold ${statusConf.badge}">${statusConf.label}</span>
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                    <div>
+                        <div class="text-xs text-gray-400 font-semibold mb-0.5">设备型号</div>
+                        <div class="text-sm font-medium text-gray-800">${escapeHtml(asset.model) || '-'}</div>
+                    </div>
+                    <div>
+                        <div class="text-xs text-gray-400 font-semibold mb-0.5">资产类别</div>
+                        <div class="text-sm font-medium text-gray-800">${escapeHtml(asset.category) || '-'}</div>
+                    </div>
+                    <div>
+                        <div class="text-xs text-gray-400 font-semibold mb-0.5">采购日期</div>
+                        <div class="text-sm font-medium text-gray-800">${escapeHtml(asset.purchase_date) || '-'}</div>
+                    </div>
+                    <div>
+                        <div class="text-xs text-gray-400 font-semibold mb-0.5">保修截止</div>
+                        <div class="text-sm font-medium ${asset.warranty_status === 'expired' ? 'text-red-600' : 'text-gray-800'}">${escapeHtml(asset.warranty_end) || '-'}</div>
+                    </div>
+                </div>
+                ${checkoutBanner}
+            </div>
+        `;
+    }
+
+    // 领用状态判定：维修中（含存在未关闭维修单）的设备不可正常领用
+    getCheckoutInfo(asset) {
+        if (asset.checkout_available) {
+            return { ok: true, reason: '' };
+        }
+        let reason = '设备状态不可用';
+        if (asset.status === 'in_repair') reason = '设备维修中';
+        else if (asset.status === 'in_use') reason = '设备已被领用';
+        else if (asset.status === 'retired') reason = '设备已报废';
+        else if (asset.open_repair_count > 0) reason = `存在 ${asset.open_repair_count} 张未关闭维修单`;
+        return { ok: false, reason };
+    }
+
+    // ---------- 维修历史区块（未关闭问题 / 最近维修单 / 换件记录） ----------
+    renderRepairSection(data) {
+        if (!data.repair) return '';
+
+        const repair = data.repair;
+        const orders = repair.recent_orders || [];
+        const parts = repair.replaced_parts || [];
+        const issues = repair.open_issues || [];
+
+        // 未关闭问题（置顶警示）
+        let issuesHtml = '';
+        if (issues.length > 0) {
+            const items = issues.map(issue => {
+                const sev = SEVERITY_MAP[issue.severity] || SEVERITY_MAP.medium;
+                return `
+                    <li class="flex items-start gap-2 py-2 border-b border-amber-100 last:border-0">
+                        <span class="mt-0.5 px-1.5 py-0.5 rounded text-xs font-bold ${sev.badge} flex-shrink-0">${sev.label}</span>
+                        <div class="flex-1">
+                            <div class="text-sm text-gray-800">${escapeHtml(issue.issue_desc)}</div>
+                            <div class="text-xs text-gray-400 mt-0.5">登记于 ${formatDateTime(issue.created_at)}</div>
+                        </div>
+                    </li>`;
+            }).join('');
+            issuesHtml = `
+                <div class="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-4">
+                    <div class="flex items-center gap-2 mb-2">
+                        <svg class="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                        <span class="text-sm font-bold text-amber-800">未关闭问题（${issues.length}）</span>
+                    </div>
+                    <ul>${items}</ul>
+                </div>`;
+        }
+
+        // 最近维修单
+        let ordersHtml;
+        if (orders.length === 0) {
+            ordersHtml = '<p class="text-sm text-gray-400 py-3 text-center">暂无维修单记录</p>';
+        } else {
+            ordersHtml = orders.map(order => {
+                const st = ORDER_STATUS_MAP[order.status] || { label: order.status, badge: 'bg-gray-100 text-gray-500' };
+                return `
+                    <div class="border border-gray-100 rounded-lg p-4 ${order.status !== 'closed' ? 'bg-red-50/40 border-red-100' : 'bg-gray-50/50'}">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="font-mono text-sm font-bold text-gray-800">${escapeHtml(order.order_no)}</span>
+                            <span class="px-2 py-0.5 rounded-full text-xs font-bold ${st.badge}">${st.label}</span>
+                        </div>
+                        <div class="text-sm text-gray-700 mb-1"><span class="text-gray-400">报修：</span>${escapeHtml(order.reported_issue) || '-'}</div>
+                        ${order.repair_note ? `<div class="text-sm text-gray-700 mb-1"><span class="text-gray-400">备注：</span>${escapeHtml(order.repair_note)}</div>` : ''}
+                        <div class="text-xs text-gray-400 mt-2 flex flex-wrap gap-x-3">
+                            <span>报修时间 ${formatDateTime(order.created_at)}</span>
+                            ${order.technician ? `<span>维修人 ${escapeHtml(order.technician)}</span>` : ''}
+                            ${order.closed_at ? `<span>关闭于 ${formatDateTime(order.closed_at)}</span>` : ''}
+                        </div>
+                    </div>`;
+            }).join('');
+            ordersHtml = `<div class="space-y-3">${ordersHtml}</div>`;
+        }
+
+        // 换件记录
+        let partsHtml;
+        if (parts.length === 0) {
+            partsHtml = '<p class="text-sm text-gray-400 py-3 text-center">暂无部件更换记录</p>';
+        } else {
+            partsHtml = `
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="text-left text-xs text-gray-400 border-b border-gray-100">
+                                <th class="py-2 pr-4 font-semibold">部件名称</th>
+                                <th class="py-2 pr-4 font-semibold">部件序列号</th>
+                                <th class="py-2 pr-4 font-semibold">更换日期</th>
+                                <th class="py-2 font-semibold">关联维修单</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${parts.map(p => `
+                                <tr class="border-b border-gray-50 last:border-0">
+                                    <td class="py-2 pr-4 text-gray-800">${escapeHtml(p.part_name)}</td>
+                                    <td class="py-2 pr-4 font-mono text-gray-500 text-xs">${escapeHtml(p.part_sn) || '-'}</td>
+                                    <td class="py-2 pr-4 text-gray-600">${escapeHtml(p.replaced_at) || '-'}</td>
+                                    <td class="py-2 font-mono text-gray-500 text-xs">${escapeHtml(p.order_no)}</td>
+                                </tr>`).join('')}
+                        </tbody>
+                    </table>
+                </div>`;
+        }
+
+        return `
+            <div class="bg-white rounded-xl p-6 border border-gray-200 shadow-sm mt-4">
+                <h3 class="text-sm font-bold text-gray-700 uppercase tracking-widest mb-4">维修历史</h3>
+                ${issuesHtml}
+                <div class="mb-5">
+                    <div class="text-xs font-bold text-gray-500 uppercase mb-2">最近维修单</div>
+                    ${ordersHtml}
+                </div>
+                <div>
+                    <div class="text-xs font-bold text-gray-500 uppercase mb-2">换过的部件</div>
+                    ${partsHtml}
+                </div>
+            </div>
+        `;
+    }
+
+    // ---------- 导出区块（基础信息与维修备注分文件导出） ----------
+    renderExportSection(data) {
+        if (!data.asset && !data.repair) return '';
+
+        const repairBtn = data.repair
+            ? `<button type="button" onclick="window.queryManager.exportRepairNotes()"
+                    class="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition text-sm font-medium">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M12 4v12m0 0l-4-4m4 4l4-4"></path></svg>
+                    导出维修记录 (CSV)
+               </button>`
+            : '';
+
+        return `
+            <div class="bg-slate-50 rounded-xl p-5 border border-slate-200 mt-4">
+                <div class="flex items-center justify-between mb-1">
+                    <h3 class="text-sm font-bold text-gray-700 uppercase tracking-widest">导出</h3>
+                </div>
+                <p class="text-xs text-gray-400 mb-3">资产基础信息与维修备注将导出为两个独立文件，便于查阅。</p>
+                <div class="flex flex-col sm:flex-row gap-3">
+                    <button type="button" onclick="window.queryManager.exportBasicInfo()"
+                        class="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition text-sm font-bold shadow-sm">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M12 4v12m0 0l-4-4m4 4l4-4"></path></svg>
+                        导出资产基础信息 (CSV)
+                    </button>
+                    ${repairBtn}
+                </div>
+            </div>
+        `;
+    }
+
+    // ---------- CSV 导出 ----------
+    downloadCsv(filename, rows) {
+        const escapeCell = (cell) => {
+            const s = (cell === null || cell === undefined) ? '' : String(cell);
+            return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+        };
+        // 加 BOM 保证 Excel 打开中文不乱码
+        const csv = '\uFEFF' + rows.map(r => r.map(escapeCell).join(',')).join('\r\n');
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    }
+
+    // 导出资产基础信息（不含任何维修备注）
+    exportBasicInfo() {
+        const data = this.lastResult;
+        if (!data) {
+            uiManager.alert('请先查询设备后再导出');
+            return;
+        }
+
+        const asset = data.asset || {};
+        const warranty = WARRANTY_STATUS_MAP[asset.warranty_status] || WARRANTY_STATUS_MAP.unknown;
+        const statusConf = ASSET_STATUS_MAP[asset.status] || { label: asset.status || '未知' };
+        const checkout = asset.checkout_available !== undefined
+            ? (asset.checkout_available ? '是' : '否')
+            : '-';
+        const now = new Date().toLocaleString('zh-CN', { hour12: false });
+
+        const rows = [
+            ['资产基础信息'],
+            ['导出时间', now],
+            [],
+            ['字段', '内容'],
+            ['固定资产编码', data.facode],
+            ['序列号(SN)', data.sn],
+            ['设备型号', asset.model || '-'],
+            ['资产类别', asset.category || '-'],
+            ['采购日期', asset.purchase_date || '-'],
+            ['保修截止日期', asset.warranty_end || '-'],
+            ['保修状态', warranty.label],
+            ['设备状态', statusConf.label],
+            ['是否可正常领用', checkout]
+        ];
+
+        this.downloadCsv(`资产基础信息_${data.facode}.csv`, rows);
+    }
+
+    // 导出维修记录（维修单 / 换件 / 未关闭问题，与基础信息分离）
+    exportRepairNotes() {
+        const data = this.lastResult;
+        if (!data || !data.repair) {
+            uiManager.alert('该设备没有可导出的维修记录');
+            return;
+        }
+
+        const repair = data.repair;
+        const now = new Date().toLocaleString('zh-CN', { hour12: false });
+        const orderStatusLabel = (s) => (ORDER_STATUS_MAP[s] || { label: s }).label;
+        const severityLabel = (s) => (SEVERITY_MAP[s] || { label: s }).label;
+
+        const rows = [
+            ['维修记录'],
+            ['固定资产编码', data.facode],
+            ['导出时间', now],
+            [],
+            ['一、最近维修单'],
+            ['维修单号', '状态', '报修问题', '维修备注', '维修人', '报修时间', '关闭时间']
+        ];
+
+        if (repair.recent_orders && repair.recent_orders.length > 0) {
+            repair.recent_orders.forEach(o => rows.push([
+                o.order_no, orderStatusLabel(o.status), o.reported_issue || '',
+                o.repair_note || '', o.technician || '', o.created_at || '', o.closed_at || ''
+            ]));
+        } else {
+            rows.push(['（无记录）']);
+        }
+
+        rows.push([], ['二、部件更换记录'], ['部件名称', '部件序列号', '更换日期', '关联维修单号']);
+        if (repair.replaced_parts && repair.replaced_parts.length > 0) {
+            repair.replaced_parts.forEach(p => rows.push([
+                p.part_name, p.part_sn || '', p.replaced_at || '', p.order_no || ''
+            ]));
+        } else {
+            rows.push(['（无记录）']);
+        }
+
+        rows.push([], ['三、未关闭问题'], ['问题描述', '严重程度', '登记时间']);
+        if (repair.open_issues && repair.open_issues.length > 0) {
+            repair.open_issues.forEach(i => rows.push([
+                i.issue_desc, severityLabel(i.severity), i.created_at || ''
+            ]));
+        } else {
+            rows.push(['（无记录）']);
+        }
+
+        this.downloadCsv(`维修记录_${data.facode}.csv`, rows);
     }
 
     hideResult() {
